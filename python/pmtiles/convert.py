@@ -3,8 +3,9 @@ import gzip
 import json
 import os
 import sqlite3
-from pmtiles.writer import write
+
 from pmtiles.reader import Reader, MmapSource, all_tiles
+from pmtiles.writer import write
 from .tile import zxy_to_tileid, tileid_to_zxy, TileType, Compression
 
 
@@ -84,11 +85,13 @@ def mbtiles_to_pmtiles(input, output, maxzoom):
                 data = gzip.compress(data)
             writer.write_tile(tileid, data)
 
-        pmtiles_header, pmtiles_metadata = mbtiles_to_header_json(mbtiles_metadata)
+        pmtiles_header, pmtiles_metadata = mbtiles_to_header_json(
+            mbtiles_metadata)
         if maxzoom:
             pmtiles_header["max_zoom"] = int(maxzoom)
             mbtiles_metadata["maxzoom"] = maxzoom
-        result = writer.finalize(pmtiles_header, pmtiles_metadata)
+
+        writer.finalize(pmtiles_header, pmtiles_metadata)
 
     conn.close()
 
@@ -180,6 +183,80 @@ def pmtiles_to_dir(input, output):
                 f.write(tile_data)
 
 
+def collect_tile_ids(directory_path: str, minzoom: int, maxzoom: int,
+                     scheme: str, verbose: bool):
+    # Collect a set of all tile IDs
+    z_set = []  # List of all zoom levels for auto-detecting maxzoom.
+    tileid_path_set = []  # List of tile (id, filepath) pairs
+    zoom_dirs = list(get_dirs(directory_path))
+    zoom_dirs.sort()
+
+    try:
+        collect_max = int(maxzoom)
+    except ValueError:
+        collect_max = 99
+
+    warned = False
+    for zoom_dir in zoom_dirs:
+        if scheme == 'ags':
+            z = int(zoom_dir.replace("L", ""))
+        elif scheme == 'gwc':
+            z = int(zoom_dir[-2:])
+        else:
+            z = int(zoom_dir)
+        if not minzoom <= z <= collect_max:
+            continue
+        z_set.append(z)
+        if z > 9 and not warned:
+            print(
+                " Warning: Large tilesets (z > 9) require extreme processing times.")
+            warned = True
+
+        if verbose:
+            print(" Searching for tiles at z=%s ..." % z, end="", flush=True)
+
+        count = 0
+        for row_dir in get_dirs(os.path.join(directory_path, zoom_dir)):
+            if scheme == 'ags':
+                y = int(row_dir.replace("R", ""), 16)
+            elif scheme == 'gwc':
+                pass
+            elif scheme == 'zyx':
+                y = int(row_dir)
+            else:
+                x = int(row_dir)
+
+            for current_file in os.listdir(
+                os.path.join(directory_path, zoom_dir, row_dir)):
+                if current_file == ".DS_Store":
+                    continue
+
+                file_name, _ = current_file.split('.', 1)
+                if scheme == 'tms':
+                    y = flip_y(z, int(file_name))
+                elif scheme == 'ags':
+                    x = int(file_name.replace("C", ""), 16)
+                elif scheme == 'gwc':
+                    x, y = file_name.split('_')
+                    x = int(x)
+                    y = flip_y(z, int(y))
+                elif scheme == 'zyx':
+                    x = int(file_name)
+                else:
+                    y = int(file_name)
+
+                tileid = zxy_to_tileid(z, x, y)
+                filepath = os.path.join(directory_path, zoom_dir, row_dir,
+                                        current_file)
+                tileid_path_set.append((tileid, filepath))
+                count += 1
+
+        if verbose:
+            print(" found %s" % count)
+
+        return tileid_path_set, z_set
+
+
 def disk_to_pmtiles(directory_path, output, maxzoom, **kwargs):
     """Convert a directory of raster format tiles on disk to PMTiles.
 
@@ -206,78 +283,23 @@ def disk_to_pmtiles(directory_path, output, maxzoom, **kwargs):
     """
     verbose = kwargs.get("verbose")
     try:
-        metadata = json.load(open(os.path.join(directory_path, 'metadata.json'), 'r'))
+        metadata = json.load(
+            open(os.path.join(directory_path, 'metadata.json'), 'r'))
     except IOError:
         raise Exception("metadata.json not found in directory")
 
     tile_format = kwargs.get('tile_format', metadata.get("format"))
     if not tile_format:
-        raise Exception("tile format not found in metadata.json nor specified as keyword argument")
+        raise Exception(
+            "tile format not found in metadata.json nor specified as keyword argument")
     metadata["format"] = tile_format  # Add 'format' to metadata
 
     scheme = kwargs.get('scheme')
 
-    # Collect a set of all tile IDs
-    z_set = []  # List of all zoom levels for auto-detecting maxzoom.
-    tileid_path_set = []  # List of tile (id, filepath) pairs
-    zoom_dirs = get_dirs(directory_path)
-    zoom_dirs.sort(key=len)
-    try:
-        collect_max = int(maxzoom)
-    except ValueError:
-        collect_max = 99
-    collect_min = metadata.get("minzoom", 0)
-    count = 0
-    warned = False
-    for zoom_dir in zoom_dirs:
-        if scheme == 'ags':
-            z = int(zoom_dir.replace("L", ""))
-        elif scheme == 'gwc':
-            z=int(zoom_dir[-2:])
-        else:
-            z = int(zoom_dir)
-        if not collect_min <= z <= collect_max:
-            continue
-        z_set.append(z)
-        if z > 9 and not warned:
-            print(" Warning: Large tilesets (z > 9) require extreme processing times.")
-            warned = True
-        if verbose:
-            print(" Searching for tiles at z=%s ..." % (z), end="", flush=True)
-        count = 0
-        for row_dir in get_dirs(os.path.join(directory_path, zoom_dir)):
-            if scheme == 'ags':
-                y = int(row_dir.replace("R", ""), 16)
-            elif scheme == 'gwc':
-                pass
-            elif scheme == 'zyx':
-                y = int(row_dir)
-            else:
-                x = int(row_dir)
-            for current_file in os.listdir(os.path.join(directory_path, zoom_dir, row_dir)):
-                if current_file == ".DS_Store":
-                    pass
-                else:
-                    file_name, _ = current_file.split('.',1)
-                    if scheme == 'tms':
-                        y = flip_y(z, int(file_name))
-                    elif scheme == 'ags':
-                        x = int(file_name.replace("C", ""), 16)
-                    elif scheme == 'gwc':
-                        x, y = file_name.split('_')
-                        x = int(x)
-                        y = flip_y(z, int(y))
-                    elif scheme == 'zyx':
-                        x = int(file_name)
-                    else:
-                        y = int(file_name)
-
-                    tileid = zxy_to_tileid(z, x, y)
-                    filepath = os.path.join(directory_path, zoom_dir, row_dir, current_file)
-                    tileid_path_set.append((tileid, filepath))
-                    count = count + 1
-        if verbose:
-            print(" found %s" % (count))
+    tileid_path_set, z_set = collect_tile_ids(directory_path,
+                                              metadata.get("minzoom", 0),
+                                              maxzoom,
+                                              scheme, verbose)
 
     n_tiles = len(tileid_path_set)
     if verbose:
@@ -294,21 +316,22 @@ def disk_to_pmtiles(directory_path, output, maxzoom, **kwargs):
 
     is_pbf = tile_format == "pbf"
 
+    count = 0
     with write(output) as writer:
-
         # read tiles in ascending tile order
-        count = 0
         if verbose:
-            count_step = (2**(maxzoom-3))**2 if maxzoom <= 9 else (2**(9-3))**2
-            print(" Begin writing %s to .pmtiles ..." % (n_tiles), flush=True)
+            count_step = (2 ** (maxzoom - 3)) ** 2 if maxzoom <= 9 else (2 ** (
+                9 - 3)) ** 2
+            print(" Begin writing %s to .pmtiles ..." % n_tiles, flush=True)
+
         for tileid, filepath in tileid_path_set:
-            f = open(filepath, 'rb')
-            data = f.read()
+            with open(filepath, 'rb') as f:
+                data = f.read()
             # force gzip compression only for vector
             if is_pbf and data[0:2] != b"\x1f\x8b":
                 data = gzip.compress(data)
             writer.write_tile(tileid, data)
-            count = count + 1
+            count += 1
             if verbose and (count % count_step) == 0:
                 print(" %s tiles inserted of %s" % (count, n_tiles), flush=True)
 
@@ -317,7 +340,7 @@ def disk_to_pmtiles(directory_path, output, maxzoom, **kwargs):
 
         pmtiles_header, pmtiles_metadata = mbtiles_to_header_json(metadata)
         pmtiles_header["max_zoom"] = maxzoom
-        result = writer.finalize(pmtiles_header, pmtiles_metadata)
+        writer.finalize(pmtiles_header, pmtiles_metadata)
 
 
 def get_dirs(path):
@@ -328,8 +351,8 @@ def get_dirs(path):
 
     Licensed under BSD 3-Clause
     """
-    return [name for name in os.listdir(path)
-        if os.path.isdir(os.path.join(path, name))]
+    return (entry.name for entry in os.scandir(path)
+            if entry.is_dir())
 
 
 def flip_y(zoom, y):
@@ -340,4 +363,4 @@ def flip_y(zoom, y):
 
     Licensed under BSD 3-Clause
     """
-    return (2**zoom-1) - y
+    return (2 ** zoom - 1) - y
