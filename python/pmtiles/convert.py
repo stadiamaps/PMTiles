@@ -3,6 +3,7 @@ import gzip
 import json
 import os
 import sqlite3
+from typing import Optional
 
 from pmtiles.reader import Reader, MmapSource, all_tiles
 from pmtiles.writer import write
@@ -183,7 +184,7 @@ def pmtiles_to_dir(input, output):
                 f.write(tile_data)
 
 
-def collect_tile_ids(directory_path: str, minzoom: int, maxzoom: int,
+def collect_tile_ids(directory_path: str, minzoom: int, maxzoom: Optional[int],
                      scheme: str, verbose: bool):
     # Collect a set of all tile IDs
     z_set = []  # List of all zoom levels for auto-detecting maxzoom.
@@ -192,7 +193,7 @@ def collect_tile_ids(directory_path: str, minzoom: int, maxzoom: int,
     zoom_dirs.sort()
 
     try:
-        collect_max = int(maxzoom)
+        collect_max = int(maxzoom or "")
     except ValueError:
         collect_max = 99
 
