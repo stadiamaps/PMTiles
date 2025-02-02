@@ -309,7 +309,7 @@ def disk_to_pmtiles(directory_path, output, maxzoom, **kwargs):
     if verbose:
         print(" done.")
 
-    maxzoom = max(z_set) if maxzoom == "auto" else int(maxzoom or "")
+    maxzoom = max(z_set) if maxzoom == "auto" or maxzoom == None else int(maxzoom)
     metadata["maxzoom"] = maxzoom
 
     if not metadata.get("minzoom"):
