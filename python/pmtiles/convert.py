@@ -184,18 +184,13 @@ def pmtiles_to_dir(input, output):
                 f.write(tile_data)
 
 
-def collect_tile_ids(directory_path: str, minzoom: int, maxzoom: Optional[int],
+def collect_tile_ids(directory_path: str, collect_min: int, collect_max: int,
                      scheme: str, verbose: bool):
     # Collect a set of all tile IDs
     z_set = []  # List of all zoom levels for auto-detecting maxzoom.
     tileid_path_set = []  # List of tile (id, filepath) pairs
     zoom_dirs = list(get_dirs(directory_path))
     zoom_dirs.sort()
-
-    try:
-        collect_max = int(maxzoom or "")
-    except ValueError:
-        collect_max = 99
 
     warned = False
     for zoom_dir in zoom_dirs:
@@ -205,7 +200,7 @@ def collect_tile_ids(directory_path: str, minzoom: int, maxzoom: Optional[int],
             z = int(zoom_dir[-2:])
         else:
             z = int(zoom_dir)
-        if not minzoom <= z <= collect_max:
+        if not collect_min <= z <= collect_max:
             continue
         z_set.append(z)
         if z > 9 and not warned:
@@ -297,9 +292,14 @@ def disk_to_pmtiles(directory_path, output, maxzoom, **kwargs):
 
     scheme = kwargs.get('scheme')
 
+    try:
+        collect_max = int(maxzoom)
+    except (ValueError, TypeError):
+        collect_max = 99
+
     tileid_path_set, z_set = collect_tile_ids(directory_path,
                                               metadata.get("minzoom", 0),
-                                              maxzoom,
+                                              collect_max,
                                               scheme, verbose)
 
     n_tiles = len(tileid_path_set)
@@ -309,10 +309,9 @@ def disk_to_pmtiles(directory_path, output, maxzoom, **kwargs):
     if verbose:
         print(" done.")
 
-    maxzoom = max(z_set) if maxzoom == "auto" or maxzoom == None else int(maxzoom)
-    metadata["maxzoom"] = maxzoom
+    metadata["maxzoom"] = maxzoom = max(z_set)
 
-    if not metadata.get("minzoom"):
+    if "minzoom" not in metadata:
         metadata["minzoom"] = min(z_set)
 
     is_pbf = tile_format == "pbf"
